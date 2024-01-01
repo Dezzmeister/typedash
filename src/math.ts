@@ -1,9 +1,9 @@
 import type { Reversed } from "./string";
-import type { Expect, Eq } from "./test";
+import type { Expect, Eq, Not } from "./test";
 
 type NextDigit = [1, 2, 3, 4, 5, 6, 7, 8, 9, 0];
 type Digit = NextDigit[number];
-type DigitSum<T extends Digit, U extends Digit> = {
+type DigitSumMap = {
     '00': [0, 0];   '10': [0, 1];
     '01': [0, 1];   '11': [0, 2];
     '02': [0, 2];   '12': [0, 3];
@@ -54,8 +54,13 @@ type DigitSum<T extends Digit, U extends Digit> = {
     '87': [1, 5];   '97': [1, 6];
     '88': [1, 6];   '98': [1, 7];
     '89': [1, 7];   '99': [1, 8];
-}[`${T}${U}`];
+};
 
+// Returns the sum of two base-10 digits, and the carry. The shape of the result is
+// [Sum extends Digit, Carry extends 0 | 1]
+type DigitSum<T extends Digit, U extends Digit> = DigitSumMap[`${T}${U}`];
+
+// Two-digit adder with carry
 type DigitSumWithCarry<T extends Digit, U extends Digit, Carry extends 1 | 0> =
     Carry extends 0 ? DigitSum<T, U> :
     DigitSum<T, U> extends [infer C extends Digit, infer V extends Digit] ?
@@ -64,6 +69,10 @@ type DigitSumWithCarry<T extends Digit, U extends Digit, Carry extends 1 | 0> =
             [C, NextDigit[V]]
     : never;
 
+/**
+ * Pads the shorter of two strings with trailing zeroes until the strings are the same
+ * length.
+ */
 type WithTrailingZeroes<T extends string, U extends string> = 
     [T, U] extends [`${infer THead}${infer TTail}`, `${infer UHead}${infer UTail}`] ?
         WithTrailingZeroes<TTail, UTail> extends [infer TPadded extends string, infer UPadded extends string] ?
@@ -71,9 +80,24 @@ type WithTrailingZeroes<T extends string, U extends string> =
         never :
     [T, U] extends ['', ''] ?
         [T, U] :
-    [T, U] extends ['', `${string}${string}`] ?
+    [T, U] extends ['', string] ?
         WithTrailingZeroes<`${T}0`, U> :
     WithTrailingZeroes<T, `${U}0`>;
+
+type WithoutLeadingZeroes<T extends string> =
+    T extends ('0' | '00') ? '0' :
+    T extends `${infer Head}${infer Tail}` ?
+        Head extends '0' ? WithoutLeadingZeroes<Tail> : T :
+    '';
+
+type NumOrDefault<T extends string> =
+    T extends '' ? '0' : T;
+
+type IsZero<T extends string> =
+    T extends '0' ? true :
+    T extends `0${infer Tail}` ?
+        IsZero<Tail> :
+    false;
 
 type SumImpl<T extends string, U extends string, Carry extends 0 | 1 = 0> =
     [T, U] extends [`${infer THead extends Digit}${infer TTail}`, `${infer UHead extends Digit}${infer UTail}`] ?
@@ -83,19 +107,157 @@ type SumImpl<T extends string, U extends string, Carry extends 0 | 1 = 0> =
     Carry extends 1 ? '1' : '';
 
 /**
- * Computes the sum of two natural numbers of arbitrary size. Uses string manipulation and
- * base-10 arithmetic instead of recursive tuples, so the time complexity is linear in the average
- * number of digits of the operands, and the space complexity is constant.
+ * Computes the sum of two numbers with the same number of digits. The overflow bit is set if the result would
+ * add another digit. The shape of the result is [Sum extends string, Overflow extends 0 | 1]. T and U must have
+ * the same length.
  */
-export type Sum<T extends number, U extends number> =
+type SumImplWithOverflow<T extends string, U extends string, Carry extends 0 | 1 = 0> =
+    [T, U] extends [`${infer THead extends Digit}${infer TTail}`, `${infer UHead extends Digit}${infer UTail}`] ?
+        DigitSumWithCarry<THead, UHead, Carry> extends [infer NextCarry extends 0 | 1, infer Res extends Digit] ?
+            SumImplWithOverflow<TTail, UTail, NextCarry> extends [infer Sum extends string, infer Overflow] ?
+                [`${Res}${Sum}`, Overflow] :
+            ['', Carry] :
+        ['', Carry] :
+    ['', Carry];
+
+/**
+ * Decompose a floating point number (represented a string) into the whole part and the fractional part.
+ * Either part can be empty. The shape of the result is
+ * [Whole extends string, Frac extends string]
+ */
+type FloatParts<T extends string> =
+    T extends `${infer Head extends number | '.'}${infer Tail extends string}` ?
+        Head extends '.' ?
+            ['', Tail] :
+        FloatParts<Tail> extends [infer TailLeft extends string, infer TailRight extends string] ?
+            [`${Head}${TailLeft}`, TailRight] :
+        ['', ''] :
+    ['', ''];
+
+/**
+ * In addition to putting the whole and fractional parts together, we need to make sure that a rule is followed
+ * in order to extract a numeric literal from the result string. The rule is that Typescript will only infer a narrowed
+ * type from a string literal if conversion from the narrowed type to a string produces the same string. Otherwise, Typescript
+ * will infer the more general type. This means that you cannot infer `1.0` from the string '1.0', because conversion from
+ * 1.0 to a string produces the string '1'. We need to make sure that `FloatStr` in this type is something that we
+ * can infer a number literal from.
+ */
+type CleanedFloat<
+    WholePart extends string,
+    FracPart extends string,
+    FloatStr extends string = IsZero<FracPart> extends true ? Reversed<WholePart> : Reversed<`${FracPart}.${WholePart}`>
+> =
+    FloatStr extends `${infer Res extends number}` ?
+        Res :
+    never;
+
+/**
+ * Each of the parts (T, U) X (whole, frac) can be empty. This is unacceptable for addition, so the empty strings need to be replaced
+ * with '0' by NumOrDefault. The whole parts are reversed* here, but the fractional parts cannot be reversed until we have added
+ * trailing zeroes to make them the same length. Then we can reverse the fractional parts and add them up. We need the overflow,
+ * because it is used as the carry when we add the whole numbers. Finally, we can get the whole and fractional sums and
+ * clean them up so that they can be converted into a numeric literal type.
+ *
+ * *Note: We add two numbers by converting them to strings and going character-by-character. It would be convenient to be
+ * able to infer the last character off of the string in constant time, but we can't do that; we can only infer
+ * the first character with something like `T extends `${infer Char}${infer Tail}`. In this situation, Typescript does the
+ * simple thing and matches `Char` to only 1 character, and `Tail` to the rest. This means that we have to reverse the whole
+ * number parts to put the least significant digits at the start of the string.
+ */
+type SumFloatsImpl<TWholeRaw extends string, TFracRaw extends string, UWholeRaw extends string, UFracRaw extends string> =
+    [Reversed<NumOrDefault<TWholeRaw>>, NumOrDefault<TFracRaw>, Reversed<NumOrDefault<UWholeRaw>>, NumOrDefault<UFracRaw>] extends [infer TWholeR extends string, infer TFracF extends string, infer UWholeR extends string, infer UFracF extends string] ?
+        [WithTrailingZeroes<TWholeR, UWholeR>, WithTrailingZeroes<TFracF, UFracF>] extends [[infer TWholeRZ extends string, infer UWholeRZ extends string], [infer TFracFZ extends string, infer UFracFZ extends string]] ?
+            [Reversed<TFracFZ>, Reversed<UFracFZ>] extends [infer TFracRZ extends string, infer UFracRZ extends string] ?
+                SumImplWithOverflow<TFracRZ, UFracRZ> extends [infer FracSum extends string, infer FracCarry extends 0 | 1] ?
+                    SumImpl<TWholeRZ, UWholeRZ, FracCarry> extends infer WholeSum extends string ?
+                        CleanedFloat<WholeSum, FracSum> :
+                    never :
+                never :
+            never :
+        never :
+    never;
+
+/**
+ * Computes the sum of two natural numbers of arbitrary size.
+ */
+export type SumNats<T extends number, U extends number> =
     WithTrailingZeroes<Reversed<`${T}`>, Reversed<`${U}`>> extends [infer TNum extends string, infer UNum extends string] ?
         Reversed<SumImpl<TNum, UNum>> extends `${infer Res extends number}` ?
             Res :
         never :
     never;
 
+/**
+ * Computes the sum of two floating point numbers of arbitrary size.
+ */
+export type SumFloats<T extends number, U extends number> =
+    [FloatParts<`${T}`>, FloatParts<`${U}`>] extends [[infer TWholeRaw extends string, infer TFracRaw extends string], [infer UWholeRaw extends string, infer UFracRaw extends string]] ?
+        SumFloatsImpl<TWholeRaw, TFracRaw, UWholeRaw, UFracRaw> :
+    never;
+
+/**
+ * Computes the sum of two non-negative numbers. Uses string manipulation to implement base-10 addition.
+ * This type delegates to the internal implementations of `SumNats` or `SumFloats` depending on the type of number passed
+ * in. SumFloats can handle the general case, but SumNats is more efficient for integers.
+ */
+export type Sum<T extends number, U extends number> =
+    [FloatParts<`${T}`>, FloatParts<`${U}`>] extends [[infer TWholeRaw extends string, infer TFracRaw extends string], [infer UWholeRaw extends string, infer UFracRaw extends string]] ?
+        [TFracRaw, UFracRaw] extends ['', ''] ?
+            WithTrailingZeroes<Reversed<TWholeRaw>, Reversed<UWholeRaw>> extends [infer TNum extends string, infer UNum extends string] ?
+                Reversed<SumImpl<TNum, UNum>> extends `${infer Res extends number}` ?
+                    Res :
+                never :
+            never :
+        SumFloatsImpl<TWholeRaw, TFracRaw, UWholeRaw, UFracRaw> :
+    never;
+
 // @ts-ignore (unused)
 type _test = [
+    Expect<Eq<SumNats<0, 0>, 0>>,
+    Expect<Eq<SumNats<1, 0>, 1>>,
+    Expect<Eq<SumNats<0, 1>, 1>>,
+    Expect<Eq<SumNats<5, 4>, 9>>,
+    Expect<Eq<SumNats<4, 5>, 9>>,
+    Expect<Eq<SumNats<0, 1_000_000_000>, 1_000_000_000>>,
+    Expect<Eq<SumNats<1_000_000_000, 0>, 1_000_000_000>>,
+    Expect<Eq<SumNats<999_999_999, 1>, 1_000_000_000>>,
+    Expect<Eq<SumNats<1, 999_999_999>, 1_000_000_000>>,
+    Expect<Eq<SumNats<99, 10>, 109>>,
+    Expect<Eq<SumNats<10, 99>, 109>>,
+    Expect<Eq<SumNats<1001, 110>, 1111>>,
+    Expect<Eq<SumNats<1001, 1000>, 2001>>,
+    Expect<Eq<SumNats<1001, 999>, 2000>>,
+
+    // Ensure that SumFloats handles SumNats cases properly
+    Expect<Eq<SumFloats<0, 0>, 0>>,
+    Expect<Eq<SumFloats<1, 0>, 1>>,
+    Expect<Eq<SumFloats<0, 1>, 1>>,
+    Expect<Eq<SumFloats<5, 4>, 9>>,
+    Expect<Eq<SumFloats<4, 5>, 9>>,
+    Expect<Eq<SumFloats<0, 1_000_000_000>, 1_000_000_000>>,
+    Expect<Eq<SumFloats<1_000_000_000, 0>, 1_000_000_000>>,
+    Expect<Eq<SumFloats<999_999_999, 1>, 1_000_000_000>>,
+    Expect<Eq<SumFloats<1, 999_999_999>, 1_000_000_000>>,
+    Expect<Eq<SumFloats<99, 10>, 109>>,
+    Expect<Eq<SumFloats<10, 99>, 109>>,
+    Expect<Eq<SumFloats<1001, 110>, 1111>>,
+    Expect<Eq<SumFloats<1001, 1000>, 2001>>,
+    Expect<Eq<SumFloats<1001, 999>, 2000>>,
+
+    // Ensure that SumFloats handles floats correctly
+    Expect<Eq<SumFloats<0., 0>, 0>>,
+    Expect<Eq<SumFloats<0, 0.>, 0>>,
+    Expect<Eq<SumFloats<1., 1.>, 2>>,
+    Expect<Eq<SumFloats<1., 1.1>, 2.1>>,
+    Expect<Eq<SumFloats<.99, .01>, 1>>,
+    Expect<Eq<SumFloats<.99, .1>, 1.09>>,
+    Expect<Eq<SumFloats<49.1234, .0007>, 49.1241>>,
+    Expect<Eq<SumFloats<1.99, 99.99>, 101.98>>,
+    Expect<Eq<SumFloats<0.00001, 0.00001>, 0.00002>>,
+    Expect<Eq<SumFloats<18753.123000045, 50.0034003>, 18803.126400345>>,
+    Expect<Eq<SumFloats<99.99, 99.99>, 199.98>>,
+
+    // Ensure that Sum handles all cases correctly
     Expect<Eq<Sum<0, 0>, 0>>,
     Expect<Eq<Sum<1, 0>, 1>>,
     Expect<Eq<Sum<0, 1>, 1>>,
@@ -109,5 +271,44 @@ type _test = [
     Expect<Eq<Sum<10, 99>, 109>>,
     Expect<Eq<Sum<1001, 110>, 1111>>,
     Expect<Eq<Sum<1001, 1000>, 2001>>,
-    Expect<Eq<Sum<1001, 999>, 2000>>
+    Expect<Eq<Sum<1001, 999>, 2000>>,
+    Expect<Eq<Sum<0., 0>, 0>>,
+    Expect<Eq<Sum<0, 0.>, 0>>,
+    Expect<Eq<Sum<1., 1.>, 2>>,
+    Expect<Eq<Sum<1., 1.1>, 2.1>>,
+    Expect<Eq<Sum<.99, .01>, 1>>,
+    Expect<Eq<Sum<.99, .1>, 1.09>>,
+    Expect<Eq<Sum<49.1234, .0007>, 49.1241>>,
+    Expect<Eq<Sum<1.99, 99.99>, 101.98>>,
+    Expect<Eq<Sum<0.00001, 0.00001>, 0.00002>>,
+    Expect<Eq<Sum<18753.123000045, 50.0034003>, 18803.126400345>>,
+    Expect<Eq<Sum<99.99, 99.99>, 199.98>>,
+
+    Expect<Eq<WithTrailingZeroes<'1', '0005'>, ['1000', '0005']>>,
+    Expect<Eq<WithTrailingZeroes<'19', '123456'>, ['190000', '123456']>>,
+    Expect<Eq<WithoutLeadingZeroes<'00'>, '0'>>,
+    Expect<Eq<WithoutLeadingZeroes<'0'>, '0'>>,
+    Expect<Eq<WithoutLeadingZeroes<'000000'>, '0'>>,
+    Expect<Eq<WithoutLeadingZeroes<'1000'>, '1000'>>,
+    Expect<Eq<WithoutLeadingZeroes<'0001000'>, '1000'>>,
+    Expect<Eq<WithoutLeadingZeroes<'145143'>, '145143'>>,
+    Expect<Eq<WithoutLeadingZeroes<''>, ''>>,
+
+    Expect<Eq<FloatParts<'1'>, ['1', '']>>,
+    Expect<Eq<FloatParts<'1.0'>, ['1', '0']>>,
+    Expect<Eq<FloatParts<'0.0'>, ['0', '0']>>,
+    Expect<Eq<FloatParts<'123.456'>, ['123', '456']>>,
+    Expect<Eq<FloatParts<'90.123456'>, ['90', '123456']>>,
+    Expect<Eq<FloatParts<'.909'>, ['', '909']>>,
+    Expect<Eq<FloatParts<'909.'>, ['909', '']>>,
+
+    Expect<IsZero<'0'>>,
+    Expect<IsZero<'00'>>,
+    Expect<IsZero<'00000'>>,
+    Expect<Not<IsZero<''>>>,
+    Expect<Not<IsZero<'1'>>>,
+    Expect<Not<IsZero<'100000'>>>,
+    Expect<Not<IsZero<'00001'>>>,
+    Expect<Not<IsZero<'010'>>>,
+    Expect<Not<IsZero<'000010000'>>>
 ];
