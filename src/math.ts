@@ -3,6 +3,10 @@ import type { Expect, Eq, Not } from "./test";
 
 type NextDigit = [1, 2, 3, 4, 5, 6, 7, 8, 9, 0];
 type Digit = NextDigit[number];
+
+/**
+ * Lookup table for single digit sums. Each value in the table has a shape like [Carry, Sum].
+ */
 type DigitSumMap = {
     '00': [0, 0];   '10': [0, 1];
     '01': [0, 1];   '11': [0, 2];
@@ -55,6 +59,64 @@ type DigitSumMap = {
     '88': [1, 6];   '98': [1, 7];
     '89': [1, 7];   '99': [1, 8];
 };
+
+/**
+ * Lookup table for single digit products. The products are reversed, because they are
+ * eventually passed into `SumImpl` (which expects numbers to be reversed).
+ */
+type DigitMulMap = {
+    '00': '00';     '10': '00';
+    '01': '00';     '11': '10';
+    '02': '00';     '12': '20';
+    '03': '00';     '13': '30';
+    '04': '00';     '14': '40';
+    '05': '00';     '15': '50';
+    '06': '00';     '16': '60';
+    '07': '00';     '17': '70';
+    '08': '00';     '18': '80';
+    '09': '00';     '19': '90';
+    '20': '00';     '30': '00';
+    '21': '20';     '31': '30';
+    '22': '40';     '32': '60';
+    '23': '60';     '33': '90';
+    '24': '80';     '34': '21';
+    '25': '01';     '35': '51';
+    '26': '21';     '36': '81';
+    '27': '41';     '37': '12';
+    '28': '61';     '38': '42';
+    '29': '81';     '39': '72';
+    '40': '00';     '50': '00';
+    '41': '40';     '51': '50';
+    '42': '80';     '52': '01';
+    '43': '21';     '53': '51';
+    '44': '61';     '54': '02';
+    '45': '02';     '55': '52';
+    '46': '42';     '56': '03';
+    '47': '82';     '57': '53';
+    '48': '23';     '58': '04';
+    '49': '63';     '59': '54';
+    '60': '00';     '70': '00';
+    '61': '60';     '71': '70';
+    '62': '21';     '72': '41';
+    '63': '81';     '73': '12';
+    '64': '42';     '74': '82';
+    '65': '03';     '75': '53';
+    '66': '63';     '76': '24';
+    '67': '24';     '77': '94';
+    '68': '84';     '78': '65';
+    '69': '45';     '79': '36';
+    '80': '00';     '90': '00';
+    '81': '80';     '91': '90';
+    '82': '61';     '92': '81';
+    '83': '42';     '93': '72';
+    '84': '23';     '94': '63';
+    '85': '04';     '95': '54';
+    '86': '84';     '96': '45';
+    '87': '65';     '97': '36';
+    '88': '46';     '98': '27';
+    '89': '27';     '99': '18';
+};
+
 type DigitNinesComplement = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
 
 // Returns the sum of two base-10 digits, and the carry. The shape of the result is
@@ -81,6 +143,11 @@ type ToNegative<T extends string> =
     `-${T}` extends `${infer N extends number}` ?
         N :
     never;
+
+type WithoutSign<T extends string> =
+    T extends `-${infer Rest extends string}` ?
+        [1, Rest] :
+    [0, T];
 
 /**
  * Pads the shorter of two strings with trailing zeroes until the strings are the same
@@ -112,6 +179,16 @@ type IsZero<T extends string> =
         IsZero<Tail> :
     false;
 
+/**
+ * Sums two natural numbers by summing each corresponding pair of digits and the carry from the sum
+ * of the previous pair. Note that T and U are expected to be reversed - i.e. Sum<"0008", "413"> is
+ * actually computing the sum of 8000 and 314. This is because of the way Typescript matches strings
+ * to consecutive inferred types. For example, given `${infer TTail}${infer THead extends Digit}`,
+ * Typescript will match at most 1 char to TTail before giving up and failing to match, even if the template
+ * literal might match if TTail had more than 1 char. "tail9" won't match, but "t9" will, even though both
+ * should be valid. We could also split the digits of a number into a tuple type and match the last one that way, but
+ * working with strings is easier because they can be cleaned and converted back to numbers in one step.
+ */
 type SumImpl<T extends string, U extends string, Carry extends 0 | 1 = 0> =
     [T, U] extends [`${infer THead extends Digit}${infer TTail}`, `${infer UHead extends Digit}${infer UTail}`] ?
         DigitSumWithCarry<THead, UHead, Carry> extends [infer NextCarry extends 0 | 1, infer Res extends Digit] ?
@@ -147,6 +224,11 @@ type FloatParts<T extends string> =
         ['', ''] :
     ['', ''];
 
+type CleanedFloatStr<
+    WholePart extends string,
+    FracPart extends string,
+> = IsZero<FracPart> extends true ? Reversed<WholePart> : Reversed<`${FracPart}.${WholePart}`>;
+
 /**
  * In addition to putting the whole and fractional parts together, we need to make sure that a rule is followed
  * in order to extract a numeric literal from the result string. The rule is that Typescript will only infer a narrowed
@@ -158,7 +240,7 @@ type FloatParts<T extends string> =
 type CleanedFloat<
     WholePart extends string,
     FracPart extends string,
-    FloatStr extends string = IsZero<FracPart> extends true ? Reversed<WholePart> : Reversed<`${FracPart}.${WholePart}`>
+    FloatStr extends string = CleanedFloatStr<WholePart, FracPart>
 > =
     FloatStr extends `${infer Res extends number}` ?
         Res :
@@ -200,6 +282,17 @@ export type SumNats<T extends number, U extends number> =
         never :
     never;
 
+type SumNatArrayImpl<Ts extends string[]> =
+    Ts extends [infer T] ?
+        T :
+    Ts extends [infer T extends string, ...infer Rest extends string[]] ?
+        SumNatArrayImpl<Rest> extends infer Sum extends string ?
+            WithTrailingZeroes<T, Sum> extends [infer TNum extends string, infer RNum extends string] ?
+                SumImpl<TNum, RNum> :
+            never :
+        never :
+    never;
+ 
 /**
  * Computes the sum of two floating point numbers of arbitrary size.
  */
@@ -239,6 +332,46 @@ export type DiffNats<T extends number, U extends number> =
             // The result is negative
             WithTrailingZeroes<RawSum, '1'> extends [infer RawSum2R extends string, infer Carry2 extends string] ?
                 ToNegative<WithoutLeadingZeroes<Reversed<SumImpl<RawSum2R, Carry2>>>> :
+            never :
+        never :
+    never;
+
+type MulDigit<Digit extends string, N extends string, Zeroes extends string = ""> =
+    N extends `${infer NC}${infer NRest}` ?
+        `${Digit}${NC}` extends keyof DigitMulMap ?
+            DigitMulMap[`${Digit}${NC}`] extends infer DigitMulRes extends string ?
+                [`${Zeroes}${DigitMulRes}`, ...MulDigit<Digit, NRest, `0${Zeroes}`>] :
+            never :
+        never :
+    [];
+
+type DoMul<Top extends string, Btm extends string, Zeroes extends string = ""> =
+    Btm extends `${infer Digit}${infer Rest}` ?
+        [...MulDigit<Digit, Top, Zeroes>, ...DoMul<Top, Rest, `0${Zeroes}`>] :
+    [];
+
+/**
+ * This works by multiplying each digit of T with each digit of U and shifting the correct amount
+ * of zeroes onto each result. The results are summed to form the product of T and U.
+ *
+ * Example: 12 * 201
+ * (2*1) + (2*0)0 + (2*2)00 +
+ * (1*1)0 + (1*0)00 + (1*2)000 =
+ * 2 + 00 + 400 + 10 + 000 + 2000 =
+ * 2412
+ */
+type MulIntsImpl<T extends string, U extends string> = 
+    DoMul<T, U> extends infer Products extends string[] ?
+        SumNatArrayImpl<Products> :
+    never;
+
+export type MulInts<T extends number, U extends number> =
+    // Bail out early so that we don't have to deal with "-0" later on
+    0 extends T | U ? 0 :
+    [WithoutSign<`${T}`>, WithoutSign<`${U}`>] extends [[infer TSign extends 0 | 1, infer TStr extends string], [infer USign extends 0 | 1, infer UStr extends string]] ?
+        [Reversed<TStr>, Reversed<UStr>] extends [infer TRev extends string, infer URev extends string] ?
+            `${TSign extends USign ? '' : '-'}${WithoutLeadingZeroes<Reversed<MulIntsImpl<TRev, URev>>>}` extends `${infer Result extends number}` ?
+                Result :
             never :
         never :
     never;
@@ -346,6 +479,28 @@ type _test = [
     Expect<Eq<Sum<0.00001, 0.00001>, 0.00002>>,
     Expect<Eq<Sum<18753.123000045, 50.0034003>, 18803.126400345>>,
     Expect<Eq<Sum<99.99, 99.99>, 199.98>>,
+
+    Expect<Eq<MulInts<0, 0>, 0>>,
+    Expect<Eq<MulInts<1, 1>, 1>>,
+    Expect<Eq<MulInts<3, 3>, 9>>,
+    Expect<Eq<MulInts<20, 20>, 400>>,
+    Expect<Eq<MulInts<100, 100>, 10000>>,
+    Expect<Eq<MulInts<-2, -2>, 4>>,
+    Expect<Eq<MulInts<-5, -5>, 25>>,
+    Expect<Eq<MulInts<-31, -31>, 961>>,
+    Expect<Eq<MulInts<-50, -50>, 2500>>,
+    Expect<Eq<MulInts<2, -2>, -4>>,
+    Expect<Eq<MulInts<-5, 5>, -25>>,
+    Expect<Eq<MulInts<31, -31>, -961>>,
+    Expect<Eq<MulInts<-50, 50>, -2500>>,
+    Expect<Eq<MulInts<1_103_193_456, 17_898>, 19_744_956_475_488>>,
+    Expect<Eq<MulInts<-1_103_193_456, 17_898>, -19_744_956_475_488>>,
+    Expect<Eq<MulInts<1_103_193_456, -17_898>, -19_744_956_475_488>>,
+    Expect<Eq<MulInts<-1_103_193_456, -17_898>, 19_744_956_475_488>>,
+    Expect<Eq<MulInts<17_898, 1_103_193_456>, 19_744_956_475_488>>,
+    Expect<Eq<MulInts<-17_898, 1_103_193_456>, -19_744_956_475_488>>,
+    Expect<Eq<MulInts<17_898, -1_103_193_456>, -19_744_956_475_488>>,
+    Expect<Eq<MulInts<-17_898, -1_103_193_456>, 19_744_956_475_488>>,
 
     Expect<Eq<WithTrailingZeroes<'1', '0005'>, ['1000', '0005']>>,
     Expect<Eq<WithTrailingZeroes<'19', '123456'>, ['190000', '123456']>>,
